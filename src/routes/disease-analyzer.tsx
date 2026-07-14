@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { DashboardShell } from "@/components/DashboardShell";
 import {
   Download,
@@ -18,9 +18,11 @@ import { useEffect, useState, useRef } from "react";
 import { jsPDF } from "jspdf";
 import { getAI, getGenerativeModel, GoogleAIBackend } from "firebase/ai";
 import firebaseApp from "@/lib/firebase";
+import { askGeminiVision, hasGeminiApiKey } from "@/lib/gemini";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+
 
 export const Route = createFileRoute("/disease-analyzer")({
   head: () => ({ meta: [{ title: "AI Disease & Report Analyzer · Vishara" }] }),
@@ -268,15 +270,6 @@ function DiseaseAnalyzerPage() {
     setIsDemoMode(false);
     
     try {
-      const ai = getAI(firebaseApp, { backend: new GoogleAIBackend() });
-      const model = getGenerativeModel(ai, {
-        model: "gemini-2.5-flash-latest",
-        generationConfig: {
-          responseMimeType: "application/json",
-        },
-      });
-
-      const imagePart = await fileToGenerativePart(selectedFile);
       const prompt = `You are a medical AI assistant trained to analyze medical documents and images.
 Analyze the uploaded image. It may be a medical document (e.g., lab test report, prescription, radiology scan, doctor's note) or a picture of a disease/symptom (e.g., skin rash, eye infection, burn, wound).
 
@@ -301,15 +294,44 @@ Provide a structured analysis in JSON format. Do not include any markdown format
   ]
 }`;
 
-      const result = await model.generateContent([prompt, imagePart]);
-      const textResponse = await result.response.text();
-      console.log("Raw Gemini Response:", textResponse);
+      let textResponse = "";
 
-      const parsed: AIAnalysisReport = JSON.parse(textResponse);
+      if (hasGeminiApiKey()) {
+        const imagePart = await fileToGenerativePart(selectedFile);
+        textResponse = await askGeminiVision(prompt, imagePart.inlineData.data, imagePart.inlineData.mimeType);
+        console.log("Raw Gemini Vision Response:", textResponse);
+      } else {
+        const ai = getAI(firebaseApp, { backend: new GoogleAIBackend() });
+        const model = getGenerativeModel(ai, {
+          model: "gemini-2.5-flash-latest",
+          generationConfig: {
+            responseMimeType: "application/json",
+          },
+        });
+
+        const imagePart = await fileToGenerativePart(selectedFile);
+        const result = await model.generateContent([prompt, imagePart]);
+        textResponse = await result.response.text();
+        console.log("Raw Firebase AI Response:", textResponse);
+      }
+
+      // Clean markdown if the response has it
+      let cleanText = textResponse.trim();
+      if (cleanText.startsWith("```json")) {
+        cleanText = cleanText.substring(7);
+      } else if (cleanText.startsWith("```")) {
+        cleanText = cleanText.substring(3);
+      }
+      if (cleanText.endsWith("```")) {
+        cleanText = cleanText.substring(0, cleanText.length - 3);
+      }
+      cleanText = cleanText.trim();
+
+      const parsed: AIAnalysisReport = JSON.parse(cleanText);
       setAnalysisResult(parsed);
       toast.success("Analysis complete!");
     } catch (error) {
-      console.warn("Firebase AI logic failed or was not provisioned. Falling back to Demo Mode:", error);
+      console.warn("AI logic failed or was not provisioned. Falling back to Demo Mode:", error);
       
       setIsDemoMode(true);
       await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -329,6 +351,7 @@ Provide a structured analysis in JSON format. Do not include any markdown format
       setIsAnalyzing(false);
     }
   };
+
 
   return (
     <DashboardShell>
@@ -480,7 +503,7 @@ Provide a structured analysis in JSON format. Do not include any markdown format
               {isDemoMode && (
                 <div className="bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-300 text-xs px-4 py-3 rounded-2xl flex items-start gap-2.5 font-semibold leading-relaxed">
                   <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                  <span>Preview Mode (Simulated AI Analysis). To connect live Gemini API, configure App Check and Gemini Developer API.</span>
+                  <span>Preview Mode (Simulated AI Analysis). Configure a Gemini API Key in the <Link to="/symptom" className="underline font-bold text-primary">Symptom Checker settings</Link> to enable live report and image analysis.</span>
                 </div>
               )}
 
